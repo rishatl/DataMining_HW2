@@ -4,6 +4,17 @@ import time
 import configparser
 import psycopg2
 from psycopg2 import OperationalError
+import datetime
+from airflow.models import DAG
+from airflow.operators.python_operator import PythonOperator
+
+args = {
+    'owner': 'airflow',
+    'start_date': datetime.datetime(2020, 2, 13),
+    'retries': 1,
+    'retry_delay': datetime.timedelta(minutes=1),
+    'depends_on_past': False,
+}
 
 
 def take_posts(token, version, domain):
@@ -92,11 +103,11 @@ def main():
     token = config['VK']['token']
     version = config['VK']['version']
     domain = config['VK']['domain']
-    db_name = config['LOCAL_DB']['db_name']
-    db_user = config['LOCAL_DB']['db_user']
-    db_password = config['LOCAL_DB']['db_password']
-    db_host = config['LOCAL_DB']['db_host']
-    db_port = config['LOCAL_DB']['db_port']
+    db_name = config['DB']['db_name']
+    db_user = config['DB']['db_user']
+    db_password = config['DB']['db_password']
+    db_host = config['DB']['db_host']
+    db_port = config['DB']['db_port']
     connection = create_connection(db_name, db_user, db_password, db_host, db_port)
     data = take_posts(token, version, domain)
     file_writer(data)
@@ -105,3 +116,11 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+with DAG(dag_id='dag', default_args=args, schedule_interval=None) as dag:
+    parse_vk_wall = PythonOperator(
+        task_id='most_common_words',
+        python_callable=main,
+        dag=dag
+    )
