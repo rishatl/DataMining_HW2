@@ -64,7 +64,7 @@ def most_common_words(connection):
             else:
                 wordcount[word] += 1
 
-    n_print = int(input("Number of top words: "))
+    n_print = 100
     print("\nOK. The {} most common words are as follows\n".format(n_print))
     word_counter = collections.Counter(wordcount)
     for word, count in word_counter.most_common(n_print):
