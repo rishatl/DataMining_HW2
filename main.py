@@ -1,93 +1,126 @@
+import requests
+import collections
+import time
+import configparser
+import psycopg2
+from psycopg2 import OperationalError
 import datetime
 from airflow.models import DAG
 from airflow.operators.python_operator import PythonOperator
-import re
-import vk_api
-import re
-import psycopg2
-from nltk.corpus import stopwords
-
-token = "1c61300a1c61300a1c61300a341c17ab9211c611c61300a7c56eca7d3df2758b4efc6b3"
-database = "postgres"
-user = "postgres"
-password = "postgres"
-host = "database-1.c1xvb10kjfue.us-east-1.rds.amazonaws.com"
-port = "5432"
 
 args = {
     'owner': 'airflow',
-    'start_date': datetime.datetime(2021, 3, 15),
+    'start_date': datetime.datetime(2020, 2, 13),
     'retries': 1,
     'retry_delay': datetime.timedelta(minutes=1),
     'depends_on_past': False,
 }
 
-def parse():
-    api = getApi(token=token)
-    group_id = "-35488145"
-    first_100_posts = get_100_posts(group_id=group_id, api=api, offset=0)
-    second_100_posts = get_100_posts(group_id=group_id, api=api, offset=100)
-    posts = first_100_posts + second_100_posts
-    word_statistic = {}
-    for item in posts:
-        words = item.get('text').split(' ')
-        for word in words:
-            word = word.lower()
-            if re.match("[a-zA-Zа-яА-ЯёЁ#_]+", word) is not None:
-                word = re.match("[a-zA-Zа-яА-ЯёЁ#_]+", word).group()
-                if not word in stopwords.words('russian'):
-                    if word_statistic.get(word) is None:
-                        word_statistic[word] = 1
-                    else:
-                        word_statistic[word] = word_statistic[word] + 1
-    word_statistic = {k: v for k, v in sorted(word_statistic.items(),
-                                   key=lambda item: item[1],
-                                   reverse=True)}
 
-    saveToDataBase(word_statistic)
+def take_posts(token, version, domain):
+    count = 100
+    offset = 0
+    all_posts = []
 
-def getApi(token):
-    session = vk_api.VkApi(token=token)
-    api = session.get_api()
-    return api
-
-def get_100_posts(group_id, api, offset):
-    posts = api.wall.get(owner_id=group_id, count=100, offset=offset).get('items')
-    return posts
-
-def deleteTable(cursor):
-    cursor.execute("DROP TABLE IF EXISTS words_statistic")
-
-def createTable(cursor):
-    cursor.execute("""create table words_statistic (
-                            word  varchar not null,
-                            count integer not null
-                        );""")
-
-def addWordToTable(cursor, key, value):
-    cursor.execute("INSERT INTO words_statistic (word, count) VALUES (\'{}\', {})".format(str(key), value))
+    while offset < 200:
+        response = requests.get("https://api.vk.com/method/wall.get",
+                                params={
+                                    'access_token': token,
+                                    'v': version,
+                                    'domain': domain,
+                                    'count': count,
+                                    'offset': offset
+                                }
+                                )
+        data = response.json()['response']['items']
+        offset += 100
+        all_posts.extend(data)
+        time.sleep(0.5)
+    return all_posts
 
 
-def saveToDataBase(word_statistic):
-    conn = psycopg2.connect(
-        database=database,
-        user=user,
-        password=password,
-        host=host,
-        port=port
-    )
-    cursor = conn.cursor()
-    deleteTable(cursor)
-    createTable(cursor)
-    for (key, value) in word_statistic.items():
-        addWordToTable(cursor, key, value)
-    conn.commit()
-    conn.close()
+def file_writer(data):
+    with open('all_posts.txt', 'w') as file:
+        i = 1
+        for post in data:
+            file.write(post['text'] + '\n')
+            try:
+                file.write(post['copy_history'][0]['text'] + '\n')
+            except Exception:
+                pass
+            file.write('\n')
+            i += 1
 
 
-with DAG(dag_id='alba_dag', default_args=args, schedule_interval=None) as dag:
+def most_common_words(connection):
+    file = open('all_posts.txt')
+    text = file.read()
+    stop_symbols = r'.,:\!/?*-_•–—0123456789&"'
+    wordcount = {}
+    for word in text.lower().split():
+        if word not in stop_symbols:
+            if word not in wordcount:
+                wordcount[word] = 1
+            else:
+                wordcount[word] += 1
+
+    n_print = int(input("Number of top words: "))
+    print("\nOK. The {} most common words are as follows\n".format(n_print))
+    word_counter = collections.Counter(wordcount)
+    for word, count in word_counter.most_common(n_print):
+        save(connection, word, count)
+        print(word, ": ", count)
+
+    file.close()
+
+
+sql = 'INSERT INTO "words" values (%s, %s)'
+
+
+def create_connection(db_name, db_user, db_password, db_host, db_port):
+    connection = None
+    try:
+        connection = psycopg2.connect(database=db_name,
+                                      user=db_user,
+                                      password=db_password,
+                                      host=db_host,
+                                      port=db_port)
+    except OperationalError as e:
+        print("The error '{e}' occurred")
+    return connection
+
+
+def save(connection, word, count):
+    cursor = connection.cursor()
+    cursor.execute(sql, (word, count))
+    connection.commit()
+
+
+def main():
+    config = configparser.ConfigParser()
+    config.sections()
+    config.read('configuration.ini')
+    token = config['VK']['token']
+    version = config['VK']['version']
+    domain = config['VK']['domain']
+    db_name = config['DB']['db_name']
+    db_user = config['DB']['db_user']
+    db_password = config['DB']['db_password']
+    db_host = config['DB']['db_host']
+    db_port = config['DB']['db_port']
+    connection = create_connection(db_name, db_user, db_password, db_host, db_port)
+    data = take_posts(token, version, domain)
+    file_writer(data)
+    most_common_words(connection)
+
+
+if __name__ == '__main__':
+    main()
+
+
+with DAG(dag_id='dag', default_args=args, schedule_interval=None) as dag:
     parse_vk_wall = PythonOperator(
-        task_id='alba_task',
-        python_callable=parse,
+        task_id='most_common_words',
+        python_callable=main,
         dag=dag
     )
