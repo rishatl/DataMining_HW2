@@ -84,9 +84,6 @@ def saveToDataBase(word_statistic):
     conn.commit()
     conn.close()
 
-if name == '__main__':
-    parse()
-
 
 with DAG(dag_id='alba_dag', default_args=args, schedule_interval=None) as dag:
     parse_vk_wall = PythonOperator(
